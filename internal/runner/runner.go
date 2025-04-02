@@ -23,12 +23,20 @@ type Runner struct {
 	messages []history.HistoryMessage
 }
 
-func NewRunner(provider llm.Provider, mcpClients map[string]*mcpclient.StdioMCPClient, tools []llm.Tool) *Runner {
+func NewRunner(systemPrompt string, provider llm.Provider, mcpClients map[string]*mcpclient.StdioMCPClient, tools []llm.Tool) *Runner {
 	return &Runner{
 		provider:   provider,
 		mcpClients: mcpClients,
 		tools:      tools,
-		messages:   []history.HistoryMessage{},
+		messages: []history.HistoryMessage{
+			{
+				Role: "system",
+				Content: []history.ContentBlock{{
+					Type: "text",
+					Text: systemPrompt,
+				}},
+			},
+		},
 	}
 }
 
