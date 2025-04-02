@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	model  = flag.String("model", "qwen2.5-coder:14b", "Model name")
+	model  = flag.String("model", "mistral-small", "Model name")
 	config = flag.String("config", ".mcp.json", "Path to MCP config file")
 )
 
@@ -34,7 +34,7 @@ func main() {
 		panic(err)
 	}
 
-	rn := runner.NewRunner(provider, clients, tools)
+	rn := runner.NewRunner(runner.SystemPrompt, provider, clients, tools)
 
 	result, err := rn.Run(ctx, "가위 바위 보를 하자. 난 가위야.")
 	if err != nil {
@@ -45,7 +45,7 @@ func main() {
 
 	<-ctx.Done()
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -56,5 +56,7 @@ func main() {
 			log.Info("all clients finished")
 			break
 		}
+
+		ticker.Reset(5 * time.Second)
 	}
 }
