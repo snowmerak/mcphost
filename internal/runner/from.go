@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
+	"sync/atomic"
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
@@ -13,7 +15,25 @@ import (
 	"github.com/mark3labs/mcphost/pkg/llm"
 )
 
-func LoadMCPClients(configPath string) (map[string]*mcpclient.StdioMCPClient, []llm.Tool, error) {
+func Recover(f func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("recovered from panic: %v", r)
+		}
+	}()
+
+	f()
+}
+
+var (
+	aliveMCPClientCount = atomic.Int64{}
+)
+
+func LoadAliveMCPClientCount() int64 {
+	return aliveMCPClientCount.Load()
+}
+
+func LoadMCPClients(ctx context.Context, configPath string) (map[string]*mcpclient.StdioMCPClient, []llm.Tool, error) {
 	f, err := os.Open(configPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open config file: %w", err)
@@ -30,7 +50,7 @@ func LoadMCPClients(configPath string) (map[string]*mcpclient.StdioMCPClient, []
 		return nil, nil, fmt.Errorf("no MCP servers found in config file")
 	}
 
-	clients, err := createMCPClients(&config)
+	clients, err := createMCPClients(ctx, &config)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create MCP clients: %w", err)
 	}
@@ -41,9 +61,13 @@ func LoadMCPClients(configPath string) (map[string]*mcpclient.StdioMCPClient, []
 		tool, err := client.ListTools(ctx, mcp.ListToolsRequest{})
 		cancel()
 		if err != nil {
-			client.Close()
+			Recover(func() {
+				client.Close()
+			})
 			for _, c := range clients {
-				c.Close()
+				Recover(func() {
+					c.Close()
+				})
 			}
 			return nil, nil, fmt.Errorf("failed to list tools for %s: %w", name, err)
 		}
@@ -66,6 +90,7 @@ type ServerConfig struct {
 }
 
 func createMCPClients(
+	ctx context.Context,
 	config *MCPConfig,
 ) (map[string]*mcpclient.StdioMCPClient, error) {
 	clients := make(map[string]*mcpclient.StdioMCPClient)
@@ -81,7 +106,9 @@ func createMCPClients(
 			server.Args...)
 		if err != nil {
 			for _, c := range clients {
-				c.Close()
+				Recover(func() {
+					c.Close()
+				})
 			}
 			return nil, fmt.Errorf(
 				"failed to create MCP client for %s: %w",
@@ -90,31 +117,49 @@ func createMCPClients(
 			)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		if err := func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-		initRequest := mcp.InitializeRequest{}
-		initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-		initRequest.Params.ClientInfo = mcp.Implementation{
-			Name:    "mcphost",
-			Version: "0.1.0",
-		}
-		initRequest.Params.Capabilities = mcp.ClientCapabilities{}
-
-		_, err = client.Initialize(ctx, initRequest)
-		if err != nil {
-			client.Close()
-			for _, c := range clients {
-				c.Close()
+			initRequest := mcp.InitializeRequest{}
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+			initRequest.Params.ClientInfo = mcp.Implementation{
+				Name:    "mcphost",
+				Version: "0.1.0",
 			}
-			return nil, fmt.Errorf(
-				"failed to initialize MCP client for %s: %w",
-				name,
-				err,
-			)
+			initRequest.Params.Capabilities = mcp.ClientCapabilities{}
+
+			_, err = client.Initialize(ctx, initRequest)
+			if err != nil {
+				Recover(func() {
+					client.Close()
+				})
+				for _, c := range clients {
+					Recover(func() {
+						c.Close()
+					})
+				}
+				return fmt.Errorf(
+					"failed to initialize MCP client for %s: %w",
+					name,
+					err,
+				)
+			}
+
+			return nil
+		}(); err != nil {
+			return nil, err
 		}
 
 		clients[name] = client
+
+		aliveMCPClientCount.Add(1)
+		context.AfterFunc(ctx, func() {
+			Recover(func() {
+				client.Close()
+			})
+			aliveMCPClientCount.Add(-1)
+		})
 	}
 
 	return clients, nil
