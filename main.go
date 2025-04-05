@@ -36,7 +36,7 @@ func main() {
 
 	rn := runner.NewRunner(runner.SystemPrompt, provider, clients, tools)
 
-	result, err := rn.Run(ctx, "가위 바위 보를 하자. 난 가위야.")
+	result, err := rn.Run(ctx, "데이터베이스에 유저 데이터를 저장하는 테이블을 생성하고, 더미 데이터를 추가해줘.")
 	if err != nil {
 		panic(err)
 	}
